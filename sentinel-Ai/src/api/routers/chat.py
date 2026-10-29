@@ -80,10 +80,16 @@ async def handle_chat(
             }
         }
         )
+        raw_res = result_state.get("raw_response")
+        final_res = result_state.get("final_response")
+        raw_len = len(raw_res) if isinstance(raw_res, (str, list, dict)) else None
+        final_len = len(final_res) if isinstance(final_res, (str, list, dict)) else None
+
         logger.info(
-            "graph result_state — raw_response=%r final_response=%r validation_approved=%r error=%r",
-            result_state.get("raw_response"),
-            result_state.get("final_response"),
+            "graph result_state — request_id=%s raw_len=%s final_len=%s validation_approved=%r error=%r",
+            chat_request.request_id,
+            raw_len,
+            final_len,
             result_state.get("validation_approved"),
             result_state.get("error"),
         )
@@ -105,7 +111,7 @@ async def handle_chat(
             ).model_dump(),
         )
 
-    blocked: bool = bool(result_state.get("blocked"))
+    blocked: bool = bool(result_state.get("blocked")) or (result_state.get("validation_approved") is False)
     final_response = result_state.get("final_response")
     error_msg: str | None = result_state.get("error")
 
@@ -115,7 +121,11 @@ async def handle_chat(
         reason = (
             final_response.get("reason", "Blocked by security policy.")
             if isinstance(final_response, dict)
-            else "Blocked by security policy."
+            else (
+                final_response
+                if isinstance(final_response, str) and final_response
+                else "Blocked by security policy."
+            )
         )
         logger.warning(
             "chat request blocked",

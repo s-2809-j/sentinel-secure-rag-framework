@@ -437,12 +437,13 @@ class TestValidationNode:
 
         assert result["validation_approved"] is False
 
-    def test_rejected_decision_still_writes_final_response(
+    def test_rejected_decision_sets_blocked_and_safe_response(
         self, mock_output_validation_agent_rejected: MagicMock
     ) -> None:
         """
-        OutputValidationAgent always returns a final_response even when
-        rejected — it may be sanitized. Node must write it regardless.
+        When OutputValidationAgent rejects, validation_node must set
+        blocked=True, validation_approved=False, a fixed safe final_response,
+        and error='Output policy violation.'
         """
         node = make_validation_node(mock_output_validation_agent_rejected)
         state = _base_state(
@@ -452,7 +453,10 @@ class TestValidationNode:
 
         result = node(state)
 
-        assert result["final_response"] == "sanitized response after rejection"
+        assert result["blocked"] is True
+        assert result["validation_approved"] is False
+        assert result["final_response"] == "The response was withheld because it violated output policy."
+        assert result["error"] == "Output policy violation."
 
     def test_none_agent_passes_raw_response_through(self) -> None:
         node = make_validation_node(None)

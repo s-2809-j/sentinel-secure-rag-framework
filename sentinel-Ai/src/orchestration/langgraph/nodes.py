@@ -327,6 +327,26 @@ def make_validation_node(
                 "error": "Output validation failed due to an internal error.",
             }
 
+        if not decision.approved:
+            violated_categories = [
+                r.category.value if hasattr(r.category, "value") else str(r.category)
+                for r in getattr(decision, "validation_results", [])
+                if not getattr(r, "passed", True)
+            ]
+            logger.warning(
+                "validation_node: output validation rejected response. "
+                "request_id=%s categories=%s",
+                request_id,
+                violated_categories,
+            )
+            return {
+                **state,
+                "blocked": True,
+                "validation_approved": False,
+                "final_response": "The response was withheld because it violated output policy.",
+                "error": "Output policy violation.",
+            }
+
         logger.info(
             "validation_node: validation complete. "
             "approved=%s request_id=%s",

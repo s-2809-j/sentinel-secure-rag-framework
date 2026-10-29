@@ -20,16 +20,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class RbacService {
-    @Configuration
-    @EnableCaching
-    public class CacheConfig {
-        @Bean
-        public CacheManager cacheManager() {
-            return new org.springframework.cache.concurrent.ConcurrentMapCacheManager(
-                    "rolePermissions"
-            );
-        }
-    }
+    
 
     private final RolePermissionRepository rolePermissionRepository;
 

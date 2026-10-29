@@ -11,7 +11,7 @@ class VectorStore:
 
     DEFAULT_COLLECTION = "sentinel_knowledge_base"
 
-    def __init__(self,db_path:str | Path = "chroma_db",collection_name: str | None = None)->None:
+    def __init__(self, db_path: str | Path = "chroma_db", collection_name: str | None = None) -> None:
         
         self.db_path = Path(db_path)
 
@@ -20,7 +20,7 @@ class VectorStore:
         )
 
         logger.info(
-            "Initalizing ChromaDB at %s",
+            "Initializing ChromaDB at %s",
             self.db_path,
         )
 
@@ -31,35 +31,65 @@ class VectorStore:
 
             self._collection = self.client.get_or_create_collection(
                 name=self.collection_name,
+                metadata={"hnsw:space": "cosine"},
             )
+
+            # If collection pre-existed without cosine metric, migrate to cosine space
+            if (
+                self._collection.metadata is None
+                or self._collection.metadata.get("hnsw:space") != "cosine"
+            ):
+                logger.warning(
+                    "Collection '%s' is not using cosine distance. Migrating to cosine space.",
+                    self.collection_name,
+                )
+                existing = self._collection.get(
+                    include=["embeddings", "documents", "metadatas"]
+                )
+                self.client.delete_collection(name=self.collection_name)
+                self._collection = self.client.create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+                if existing.get("ids"):
+                    self._collection.add(
+                        ids=existing["ids"],
+                        documents=existing.get("documents"),
+                        metadatas=existing.get("metadatas"),
+                        embeddings=existing.get("embeddings"),
+                    )
+                logger.info(
+                    "Successfully migrated collection '%s' to cosine distance space.",
+                    self.collection_name,
+                )
+
             logger.info(
-                "Connected to collection %s ",
+                "Connected to collection %s (metric: cosine)",
                 self._collection_name,
             )
 
         except Exception as exc:
             logger.exception(
-                "Failed to initalize ChromaDB."
+                "Failed to initialize ChromaDB."
             )
             raise RuntimeError(
-                "unable to initalize the vector store."
-            )from exc
+                "unable to initialize the vector store."
+            ) from exc
+
     @property
     def collection_name(self) -> str:
-    
-
         return self._collection_name
 
     def store(
             self,
             embedded_chunks: list[EmbeddedChunk]
-    )->None:
+    ) -> None:
         
         if not embedded_chunks:
             logger.warning("No embedded chunks provided for collection '%s'.", self.collection_name)
             return
     
-        logger.info("Storing %d embedded chunks into collection %s",len(embedded_chunks),self.collection_name)
+        logger.info("Storing %d embedded chunks into collection %s", len(embedded_chunks), self.collection_name)
 
         try:
             ids = [
@@ -99,15 +129,13 @@ class VectorStore:
 
             raise RuntimeError(
                 "Failed to store embedded chunks"
-
-            )from exc
+            ) from exc
         
     def search(
             self,
             embedding: list[float],
-            top_k : int =5,
-            where : dict | None = None,
-
+            top_k: int = 5,
+            where: dict | None = None,
     ) -> dict:
         
         logger.info(
@@ -119,8 +147,8 @@ class VectorStore:
         try:
             results = self._collection.query(
                 query_embeddings=[embedding],
-                n_results = top_k,
-                where = where,
+                n_results=top_k,
+                where=where,
             )
 
             logger.info(
@@ -131,11 +159,9 @@ class VectorStore:
         
         except Exception as exc:
             logger.exception("Vector search failed")
-            raise RuntimeError("Failed to search the vector store"
-              
-                               )from exc
-    def count(self) -> int:
+            raise RuntimeError("Failed to search the vector store") from exc
 
+    def count(self) -> int:
         return self._collection.count()
 
     def exists_by_checksum(self, checksum: str) -> bool:
@@ -159,9 +185,7 @@ class VectorStore:
             return False
 
     def clear(self) -> None:
-
         try:
-
             ids = self._collection.get()["ids"]
 
             if ids:
@@ -173,14 +197,9 @@ class VectorStore:
             )
 
         except Exception as exc:
-
             logger.exception(
                 "Failed to clear collection."
             )
-
             raise RuntimeError(
                 "Failed to clear the collection."
             ) from exc
-            
-
-

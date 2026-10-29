@@ -124,6 +124,21 @@ class HallucinationValidator(BaseValidator):
     # Public API
     ####################################################################
 
+    CONTROLLED_NO_EVIDENCE_PHRASES = (
+        "not available in the knowledge base",
+        "couldn't find any relevant information",
+        "could not find any relevant information",
+        "lacks sufficient evidence",
+        "no relevant information",
+    )
+
+    @classmethod
+    def is_controlled_no_evidence_response(cls, response: str) -> bool:
+        if not response:
+            return False
+        normalized = response.strip().lower()
+        return any(phrase in normalized for phrase in cls.CONTROLLED_NO_EVIDENCE_PHRASES)
+
     def _validate(
     self,
     context: ValidationContext,
@@ -135,6 +150,20 @@ class HallucinationValidator(BaseValidator):
         logger.info(
             "Starting Hallucination Validator."
         )
+
+        # No-context validation path: if no chunks survive, verify whether response is a controlled refusal
+        if not context.retrieved_chunks and self.is_controlled_no_evidence_response(context.llm_response):
+            logger.info(
+                "Controlled no-evidence response detected — approving via no-context validation path."
+            )
+            return ValidationResult(
+                validator_name=self.name,
+                passed=True,
+                category=OutputCategory.SAFE,
+                score=0.0,
+                reason="Controlled no-evidence response approved without retrieved context.",
+                details={"no_context": True, "refusal_detected": True},
+            )
 
         self._validate_inputs(context)
 

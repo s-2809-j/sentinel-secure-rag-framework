@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class AssistantAgent:
-    
+
+    NO_EVIDENCE_RESPONSE: str = (
+        "The requested information is not available in the knowledge base."
+    )
 
     def __init__(
         self,
@@ -137,7 +140,7 @@ class AssistantAgent:
         if not retrieved_chunks:
             logger.warning("No relevant documents were retrieved.")
             return (
-                "The requested information is not available in the knowledge base.",
+                self.NO_EVIDENCE_RESPONSE,
                 [],
             )
 
@@ -149,7 +152,7 @@ class AssistantAgent:
         if all(not (c.content or "").strip() for c in retrieved_chunks):
             logger.warning("All retrieved chunks have empty text — skipping LLM.")
             return (
-                "The requested information is not available in the knowledge base.",
+                self.NO_EVIDENCE_RESPONSE,
                 [],
             )
 

@@ -48,7 +48,7 @@ class OutputValidationAgent:
         policy_engine: OutputPolicyEngine,
         risk_engine: OutputRiskEngine,
         sanitizer: ResponseSanitizer,
-        ) -> None:
+    ) -> None:
 
         if not validators:
             raise ValueError(
@@ -76,9 +76,9 @@ class OutputValidationAgent:
         self._sanitizer = sanitizer
 
     def validate(
-            self,
-            context: ValidationContext,
-        ) -> ValidationDecision:
+        self,
+        context: ValidationContext,
+    ) -> ValidationDecision:
         """
         Validate an LLM response and produce the final decision.
         """
@@ -107,7 +107,6 @@ class OutputValidationAgent:
         final_response = original_response
 
         if policy.should_sanitize:
-
             final_response = (
                 self._sanitizer.sanitize(
                     final_response,
@@ -116,24 +115,17 @@ class OutputValidationAgent:
             )
 
         decision = ValidationDecision(
-
             approved=policy.allowed,
-
             original_response=original_response,
-
             final_response=final_response,
-
             validation_results=validation_results,
-
             policy_evaluation=policy,
-
             risk_assessment=risk,
-
             request_id=context.metadata.get(
                 "request_id",
                 "",
             ),
-)
+        )
 
         logger.info(
             "Output validation completed. "
@@ -147,15 +139,13 @@ class OutputValidationAgent:
     def _run_validators(
         self,
         context: ValidationContext,
-        ) -> list[ValidationResult]:
+    ) -> list[ValidationResult]:
         """
         Execute every validator.
         """
-
         results: list[ValidationResult] = []
 
         for validator in self._validators:
-
             logger.debug(
                 "Executing validator '%s'.",
                 validator.name,
@@ -165,16 +155,17 @@ class OutputValidationAgent:
                 result = validator.validate(context)
             except Exception as exc:
                 logger.exception(
-                    "Validator '%s' failed — skipping and continuing.",
+                    "Validator '%s' failed during execution.",
                     validator.name,
                 )
-                # Do not halt the pipeline; treat failed validator as non-blocking
-                continue
+                raise ValidatorExecutionError(
+                    f"Validator '{validator.name}' failed during execution: {exc}"
+                ) from exc
 
             if not isinstance(
-                    result,
-                    ValidationResult,
-                ):
+                result,
+                ValidationResult,
+            ):
                 raise InvalidValidationResultError(
                     f"Validator '{validator.name}' "
                     f"returned an invalid ValidationResult."

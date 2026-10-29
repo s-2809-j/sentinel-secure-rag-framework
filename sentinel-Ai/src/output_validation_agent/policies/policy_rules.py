@@ -15,13 +15,10 @@ POLICY_RULES: dict[OutputCategory, str] = {
     OutputCategory.SAFE: ALLOW,
 
     #
-    # Hallucination and unsupported claims: ALLOW at this stage.
-    # Sentence-level heuristic scoring produces false positives on
-    # paraphrased RAG responses. Full Tier-2 LLM judge is the correct
-    # enforcement gate, not destructive sanitization.
+    # Hallucination and unsupported claims.
     #
-    OutputCategory.HALLUCINATION: ALLOW,       # ← was SANITIZE
-    OutputCategory.UNSUPPORTED_CLAIM: ALLOW,   # ← was SANITIZE
+    OutputCategory.HALLUCINATION: SANITIZE,
+    OutputCategory.UNSUPPORTED_CLAIM: SANITIZE,
 
     #
     # Response must never be returned.

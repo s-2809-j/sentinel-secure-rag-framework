@@ -254,12 +254,12 @@ sequenceDiagram
     DB-->>Filter: UserDetails
     Filter->>Controller: Forward Request (SecurityContext set)
     Controller->>Service: processChat(ChatRequest)
-    Service->>DB: Resolve ChatSession & Save User Message
+    Service->>DB: Resolve ChatSession and Save User Message
     Service->>Feign: chat(FastApiChatRequest)
     Feign->>FastAPI: POST /v1/chat
     FastAPI->>Graph: invoke(initial_state)
     Graph->>Graph: security_node (InputSecurityAgent)
-    alt Security Rejected / Detector Match
+    alt Security Rejected or Detector Match
         Graph->>Graph: Route to blocked_node
         Graph-->>FastAPI: blocked=True, risk_score (1.0 on fail-closed)
         FastAPI-->>Feign: ChatApiResponse (blocked=True, message=reason)
@@ -268,8 +268,13 @@ sequenceDiagram
         Graph->>Gemini: generate_response(Context, Query)
         Gemini-->>Graph: Raw LLM Output
         Graph->>Graph: validation_node (OutputValidationAgent)
-        Graph-->>FastAPI: final_response, validation_approved (blocked=True if output rejected)
-        FastAPI-->>Feign: ChatApiResponse (success=True, response_text=answer; blocked=True if output rejected)
+        alt Output Approved
+            Graph-->>FastAPI: final_response, validation_approved=True
+            FastAPI-->>Feign: ChatApiResponse (success=True, response_text=answer)
+        else Output Rejected
+            Graph-->>FastAPI: blocked=True, fixed safe message
+            FastAPI-->>Feign: ChatApiResponse (success=False, blocked=True, message=reason)
+        end
     end
     Feign-->>Service: FastApiChatResponse
     alt Response Successful

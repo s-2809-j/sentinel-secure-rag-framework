@@ -40,8 +40,8 @@ Sentinel is an AI security gateway and Retrieval-Augmented Generation (RAG) fram
 |---|---|---|
 | **Input Security Pipeline** | **Implemented** | Synchronous 6-detector ensemble (Prompt Injection, Jailbreak, System Prompt, Malicious Instruction, PII, Similarity) with NFKC normalization and binary policy enforcement. |
 | **Document Security Pipeline** | **Implemented** | 13-stage document inspection featuring FileGuard validation, format parsers (PDF, DOCX, TXT, MD), Tier-1 regex detection, and Tier-2 LLM judge escalation. |
-| **RAG Knowledge Base** | **Implemented** | Local ChromaDB vector store using `sentence-transformers` embeddings, recursive text chunking, and strict-grounding prompt generation. |
-| **Output Validation Pipeline** | **Implemented** | 4-validator pipeline evaluating hallucination, PII, prompt leakage, and safety. Rejected responses (e.g., PII or prompt leakage) are blocked and replaced with a fixed message; hallucination findings are logged but do not block (see Known Limitations). |
+| **RAG Knowledge Base** | **Implemented** | Local ChromaDB vector store calibrated to cosine distance (`hnsw:space: cosine`) with automated collection migration, `sentence-transformers` embeddings, recursive text chunking, and strict-grounding prompt generation with controlled empty-context refusal guards. |
+| **Output Validation Pipeline** | **Implemented** | 4-validator pipeline evaluating hallucination, PII, prompt leakage, and safety. Enforces fail-closed error handling (raising `ValidatorExecutionError`), sanitizes hallucinated responses, provides a dedicated no-context validation path for controlled refusals, and blocks PII and prompt leakage violations. |
 | **Semantic Attack Detection** | **Inactive** | `SimilarityDetector` connects to `sentinel_attack_index`, which currently contains 0 vectors in the seed database. |
 | **JWT Authentication & Rotation** | **Implemented** | Stateless 15-minute access tokens with rotating 7-day database-backed refresh tokens in PostgreSQL. |
 | **Role-Based Access Control** | **Partial** | Coarse `@PreAuthorize` guards (`ADMIN`, `ANALYST`, `VIEWER`) are active. The fine-grained `role_permissions` schema and cached `RbacService` exist in code but are not wired to endpoints. |
@@ -355,14 +355,14 @@ Executes the 13-stage document validation pipeline implemented in `DocumentSecur
 Runs across candidate LLM responses before delivery to the user:
 - **Validators:** Executes 4 validators sequentially:
   - `HallucinationValidator`: Splits response into sentences and computes a Tier-1 support score against retrieved evidence using weighted heuristics: Semantic Similarity (0.45), Entity Overlap (0.20), Numeric Consistency (0.20), Keyword Overlap (0.10), Citation Match (0.05). If entity or numeric consistency is 0.0, a hard rule escalates directly to the Tier-2 Gemini judge. Decisions: `>= 0.90` (ACCEPT), `<= 0.60` (REJECT), between (ESCALATE).
+    - **Dedicated No-Context Validation Path:** When zero chunks survive retrieval filtering, `HallucinationValidator` inspects whether the response is a standardized controlled refusal (e.g., `"The requested information is not available in the knowledge base."`). Controlled refusals pass validation cleanly (`SAFE`, score `0.0`), while substantive claims asserted without supporting evidence are rejected as hallucinations.
   - `PIIValidator`: Scans generated output for leaked PII patterns.
   - `PromptLeakageValidator`: Detects exfiltration of system prompt directives.
   - `SafetyPolicyValidator`: Uses regex heuristics to identify policy triggers, escalating to a Tier-2 Gemini safety judge when matched.
-- **Enforcement and Fail-Open Behavior:**
-  - `OutputValidationAgent._run_validators()` wraps every validator execution in a `try/except` block, catches any raised exception, logs the incident, and continues to the next validator.
-  - In `policy_rules.py`, `OutputCategory.HALLUCINATION` and `UNSUPPORTED_CLAIM` are mapped to `ALLOW`. Hallucinations do not block responses.
-    - **Enforcement:** When `OutputValidationAgent` rejects a response (`approved = False`), `validation_node` sets `blocked = True` and replaces the response with a fixed safe message. As defense in depth, `chat.py` also treats `validation_approved is False` as blocked. The raw LLM text is never returned, and `chat.py` logs `request_id` and response lengths, not response text.
-  - `ResponseSanitizer` is dead code: because no policy rule produces `should_sanitize = True`, sanitization is never executed.
+- **Enforcement and Fail-Closed Behavior:**
+  - `OutputValidationAgent._run_validators()` runs each validator in a fail-closed execution harness. If any validator encounters an unhandled exception, it logs the incident and raises `ValidatorExecutionError` with exception chaining (`from exc`), preventing silent approvals of unvalidated responses.
+  - In `policy_rules.py`, `OutputCategory.HALLUCINATION` and `UNSUPPORTED_CLAIM` are mapped to `SANITIZE`, ensuring ungrounded outputs trigger response sanitization rather than being allowed silently.
+  - **Enforcement:** When `OutputValidationAgent` rejects a response (`approved = False`), `validation_node` sets `blocked = True` and replaces the response with a fixed safe message. As defense in depth, `chat.py` also treats `validation_approved is False` as blocked. The raw LLM text is never returned, and `chat.py` logs `request_id` and response lengths, not response text.
 
 ---
 
@@ -381,9 +381,11 @@ Runs across candidate LLM responses before delivery to the user:
 
 ### Retrieval & Prompt Assembly
 
-- **Retriever Parameters:** `DEFAULT_TOP_K = 5`.
-- **Score Filtering:** Results are filtered using `distance <= 0.8`. Deduplication is performed by `chunk_id`. (Errors during Chroma query are swallowed to `[]`).
-- **Prompt Construction:** Retrieved chunk texts are truncated to a maximum of 400 characters each (dropping ~60% of each 1000-character chunk) and injected into the prompt structure:
+- **Vector Distance Metric:** Configured with `metadata={"hnsw:space": "cosine"}`. Small negative values due to floating-point precision are clamped to `0.0`. Collections created under legacy squared L2 metrics are automatically detected and migrated to cosine space on initialization.
+- **Retriever Parameters:** `DEFAULT_TOP_K = 5`, `DEFAULT_THRESHOLD = 0.8` (configurable).
+- **Score Filtering:** Results are filtered using cosine `distance <= threshold`. Under ChromaDB's cosine distance ($1 - \cos(	heta)$), the default threshold of `0.8` admits chunks with cosine similarity $\ge 0.2$. Deduplication is performed by `chunk_id`.
+- **Empty-Context Guard:** If zero chunks survive threshold filtering or all candidate chunks have whitespace-only content, `AssistantAgent` returns a standardized controlled response (`"The requested information is not available in the knowledge base."`, `[]`) immediately, bypassing LLM invocation to prevent ungrounded generation.
+- **Prompt Construction:** When chunks survive, retrieved texts are truncated to a maximum of 400 characters each (dropping ~60% of each 1000-character chunk) and injected into the prompt structure:
 
 ```
 CONTEXT:
@@ -665,80 +667,13 @@ sentinel/
 - **Fail-Closed Input Security:** If any pre-generation detector fails or encounters an unhandled exception, Sentinel blocks the query with maximum risk (`1.0`) rather than allowing potentially adversarial queries through.
 
 ---
-
 ## Known Limitations
 
-### Security
-- **Unauthenticated AI Engine Port:** FastAPI port `8000` has no authentication. Any local process on the host can invoke LangGraph workflows directly, bypassing Spring's authentication and RBAC.
-- **Arbitrary Temp File Read & Deletion via JSON Endpoints:** `DocumentController` JSON endpoints allow clients to pass any `filePath` within `java.io.tmpdir`. The controller inspects the file and deletes it in a `finally` block, enabling arbitrary temporary file deletion. (The frontend uses only multipart).
-- **FastAPI Path Traversal & Size Trust:** FastAPI's `documents.py` validates file paths using `str.startswith`, which permits sibling directory access (e.g., `/tmp_sibling`). It also trusts the client-provided `size_bytes` JSON field rather than inspecting actual disk size.
-- **`/v1/knowledge/upload` Lacks Guards:** The standalone knowledge upload endpoint performs no file size limit enforcement or path traversal validation.
-- **Fail-Open Output Validation on Tier-2 Failure:** In `SafetyPolicyValidator`, if Tier-1 flags an issue and the Tier-2 Gemini judge throws an exception, `OutputValidationAgent` swallows the exception and allows the response through.
-- **Stateless Access Tokens Persist After Logout & Deactivation:** Access tokens lack a `jti` identifier and are not checked against a revocation blacklist, remaining valid until their 15-minute expiration after logout or user deactivation.
-- **Plaintext Refresh Tokens in Database & Storage:** Refresh tokens are stored in plaintext in the PostgreSQL database and stored in browser `localStorage`.
-- **Untrusted Context Injection:** Retrieved RAG chunks are injected under `CONTEXT:\n{context}` without XML delimiters or instructions warning the LLM that retrieved content is untrusted, exposing the system to indirect prompt injection.
-- **Detector Evasion, False Positives & No Redaction:** Input detectors use rigid regex patterns without semantic understanding or redaction capability; any match results in total request blocking, while minor obfuscation evades detection.
-- **Stub Malware Validator:** `MalwareValidator` is a no-op stub that logs a message and returns without scanning files.
-- **DOCX Tables Ignored:** `DocxParser` parses only `doc.paragraphs`; all text inside tables is ignored.
-- **No Zip-Bomb Limit & Client-Supplied MIME:** Uploaded archives are parsed without decompression ratio limits, and `file.getContentType()` trusts client headers.
+Sentinel is a development prototype. The main gaps to know before any non-local deployment:
 
-### Detection Quality
-
-- **Empty Attack Vector Index:** The `sentinel_attack_index` collection contains 0 vectors in ChromaDB, rendering semantic attack similarity detection inactive.
-- **Attack Category Enum Mismatch:** `AttackCategory` defines `SYSTEM_PROMPT_LEAKAGE`, but the attack pack folder on disk is named `system_prompt`. A semantic match raises an unhandled `ValueError`, crashing the input analysis.
-- **Monolithic Attack Chunks:** The attack pack loader blends one 600-900 character chunk per attack-pack category into a single vector, making short user queries unable to match diverse attack examples.
-- **Retriever L2 vs Cosine Calibration Bug:** Collections are created without `hnsw:space=cosine`, defaulting to squared L2 distance. The retriever cutoff `distance <= 0.8` is calibrated for cosine, filtering results under an incompatible metric.
-- **Effective Cosine Similarity Threshold is 0.925:** Due to the conversion formula `1.0 - distance` applied to squared L2 distance, queries must achieve $\ge 0.925$ cosine similarity to pass the default 0.85 threshold.
-- **Inert Hallucination Policy:** In `policy_rules.py`, `HALLUCINATION` and `UNSUPPORTED_CLAIM` are mapped to `ALLOW`. Hallucination detection does not trigger blocking or sanitization.
-- **Diluted Output Risk Engine Score:** Validator scores are averaged using an arithmetic mean. A single critical violation (1.0) is diluted down to `0.25` (MEDIUM) if the other three validators pass.
-- **Weak 6-Phrase Ingestion Filter:** Knowledge base ingestion scans for only 6 static substring phrases before accepting documents.
-
-### Retrieval & Generation
-
-- **400-Character Truncation Drops ~60% of Chunk:** `AssistantAgent` truncates chunks to 400 characters when assembling prompts for Gemini, dropping ~60% of each 1000-character chunk, while passing full 1000-character chunks to `HallucinationValidator`.
-- **Scanned PDF Bypass in `/analyze`:** `pypdf` extracts empty text from image-only PDFs. In the `/analyze` flow, this yields 0 chunks and returns `allowed = True`. (Knowledge upload explicitly rejects empty text).
-- **Temporary Filenames Persisted as Source Metadata:** Ingestion metadata records the server temp filename (`sentinel_upload_...`) under `document_name` and `source` rather than the original uploaded filename.
-- **No Multi-Tenant Isolation in Vector Store:** All users query the same ChromaDB collection with no tenant or user scoping filter.
-- **No Multi-Turn Conversation Memory:** `AssistantAgent` injects no conversation history into prompts; every query is evaluated as a single turn.
-
-### Reliability & Operations
-
-- **Synchronous `graph.invoke` Blocks Event Loop:** In `chat.py`, `result_state = graph.invoke(...)` is synchronous and blocks the asyncio event loop in a single uvicorn worker during long Gemini round-trips.
-- **Retriever Swallows ChromaDB Errors to `[]`:** If ChromaDB fails or raises an exception during query execution, `Retriever` logs the error and returns an empty chunk list `[]` instead of propagating failure.
-- **Uncapped Synchronous LLM Calls in Document Pipeline:** `DocumentSecurityAgent` calls Gemini synchronously for each escalated chunk without a concurrency cap, blocking the async event loop on large documents.
-- **Tier-2 Failure Blocks Whole Document:** If any Tier-2 LLM call fails on a single escalated chunk, `Tier2DetectionEngine` raises `Tier2EngineError`, blocking the entire document.
-- **Database Connection Pool Exhaustion:** `ChatService.processChat()` holds a `@Transactional` database connection open across the entire multi-second Feign call to FastAPI, threatening the default 10-connection Hikari pool.
-- **Spring Multipart Limit Overrides Guard:** Because no multipart limit is configured in `application.yml`, Spring's default 1 MB limit rejects files between 1 MB and 10 MB with HTTP 500 before the controller's 10 MB guard can run.
-- **No Rate Limiting:** No rate limiting is implemented on authentication, chat, document analysis, or upload endpoints.
-- **Blocked Responses Return HTTP 200 & Drop Metadata:** Blocked queries return HTTP 200 with `data=null`, and Spring Boot drops the `blocked` and `risk_score` fields returned by FastAPI.
-- **Audit Page Broken (HTTP 404):** The frontend `AuditPage` requests `GET /api/v1/audit`, but `AuditController` only routes `/api/v1/audit/logs`, resulting in a 404 error in the UI.
-- **Audit Log Spoofing & Status Code Inaccuracies:** `AuditAspect` accepts raw `X-Forwarded-For` headers without proxy trust validation, catches exceptions and records `statusCode = 500` even for handled 4xx errors, and misses filter-level rejections.
-- **Infrastructure Failures Displayed as Security Blocks:** When Gemini fails, `chat.py` returns `success = false, blocked = false`. The frontend checks `!data.success` and displays the "request blocked by security policy" banner.
-- **Per-Request Database Lookup in JwtAuthenticationFilter:** Every authenticated request queries PostgreSQL via `userDetailsService.loadUserByUsername()`, defeating stateless JWT performance.
-- **Login Allows Only One Active Session Per User:** Calling `/api/v1/auth/login` calls `revokeAllByUser`, immediately invalidating all active refresh tokens from other devices or tabs.
-- **No Cross-Tab Refresh Synchronization:** The Axios interceptor lacks a `window.storage` event listener. Rotating a refresh token in one tab invalidates the session in other open tabs.
-- **Disabled Users & Duplicate Emails Return HTTP 500:** Disabled user logins (`DisabledException`) and duplicate email registrations (`DataIntegrityViolationException`) are not mapped in `GlobalExceptionHandler` and return HTTP 500.
-
----
-
-## Roadmap
-
-- [ ] **Make `handle_chat` Non-Blocking:** Offload synchronous `graph.invoke` to a background thread or async execution to prevent blocking the single uvicorn worker event loop.
-- [ ] **ChromaDB Distance Metric Fix:** Create a new collection configured with `metadata={"hnsw:space": "cosine"}`, re-ingest all knowledge documents, and re-calibrate distance thresholds.
-- [ ] **Activate Semantic Attack Detection:** Fix the `system_prompt` enum mismatch, create a cosine attack collection, chunk attack packs per example, and populate `sentinel_attack_index`.
-- [ ] **Harden Authentication on FastAPI Port 8000:** Implement internal shared-secret API key authentication or mTLS between Spring Boot and FastAPI.
-- [ ] **Log Failing Detectors & Fail Closed:** Log explicitly which detector failed and preserve fail-closed enforcement without crashing the whole application state.
-- [ ] **Move Feign Call Out of `@Transactional`:** Refactor `ChatService` to release database connections before initiating long-running Feign calls to FastAPI.
-- [ ] **Remove JSON `filePath` Endpoints & Secure Ingestion:** Remove JSON `filePath` endpoints, require multipart streams, and enforce size/path guards on `/v1/knowledge/upload`.
-- [ ] **Add Rate Limiting:** Implement rate limiting (e.g. via Bucket4j or API gateway) on login, chat, and upload endpoints.
-- [ ] **Fail-Safe Validators:** Ensure output validators do not silently discard Tier-1 safety escalation findings when Tier-2 judges encounter transient errors.
-- [ ] **Fix Broken Audit Page & Aspect:** Update frontend `AuditPage` to call `/api/v1/audit/logs`, validate proxy headers in `AuditAspect`, and capture real response codes.
-- [ ] **Hash Refresh Tokens with SHA-256:** Hash refresh tokens before persisting them in PostgreSQL to protect against database read exposures.
-- [ ] **Migrate to HttpOnly Cookies:** Transition token storage from browser `localStorage` to secure `HttpOnly` cookies (with CSRF protection re-enabled).
-- [ ] **Add Exception Mapping:** Map `DisabledException` (401), `DataIntegrityViolationException` (409), and `MaxUploadSizeExceededException` (413) in `GlobalExceptionHandler`.
-- [ ] **Implement Multi-Tenant Chroma Scoping:** Add `user_id` metadata filtering to ChromaDB retrieval to prevent cross-user knowledge leakage.
-- [ ] **Activate Fine-Grained RBAC:** Wire the existing `role_permissions` schema and `RbacService` to controllers via custom permission evaluators.
-- [ ] **Automate Testing in CI:** Update `.github/workflows/ci.yml` (and align to Python 3.11) to execute backend Gradle tests and AI engine Pytest suites on pull requests.
+- **Internal AI engine is unauthenticated and path-driven.** FastAPI (port 8000) has no authentication, and its document endpoints accept server-side file paths, with weak path and size guards and none on `/v1/knowledge/upload`. It must only be reachable from the Spring gateway on the same host. Planned fix: shared-secret or mTLS between the services, and multipart streams instead of file paths.
+- **Shared knowledge base and limited detection depth.** All users query one vector collection with no tenant scoping. Input detection is regex-based, so obfuscated attacks can evade it, and the semantic attack-similarity layer is built but inactive (its index has 0 vectors).
+- **Prototype-grade operational hardening.** There is no rate limiting. Refresh tokens are stored in plaintext and in `localStorage`. `ChatService` holds a database transaction open across the AI call. CI currently runs no tests.
 
 ---
 

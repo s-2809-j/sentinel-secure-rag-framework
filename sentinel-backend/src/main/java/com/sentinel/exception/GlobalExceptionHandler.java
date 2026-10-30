@@ -10,7 +10,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -81,7 +81,22 @@ public class GlobalExceptionHandler {
                         "AI service is temporarily unavailable. Please try again.",
                         HttpStatus.BAD_GATEWAY.value(), null));
     }
+    @ExceptionHandler(RoleChangeException.class)
+    public ResponseEntity<ErrorResponse> handleRoleChange(RoleChangeException ex) {
+        HttpStatus status = RoleChangeException.SELF_ROLE_CHANGE.equals(ex.getErrorCode())
+                ? HttpStatus.FORBIDDEN
+                : HttpStatus.CONFLICT;
+        return ResponseEntity.status(status)
+                .body(new ErrorResponse(ex.getErrorCode(), ex.getMessage(), status.value(), null));
+    }
 
+    // Malformed path variable (e.g. a non-UUID id) would otherwise hit the 500 catch-all
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        return ResponseEntity.badRequest()
+                .body(new ErrorResponse("INVALID_REQUEST", "Invalid value for parameter: " + ex.getName(),
+                        HttpStatus.BAD_REQUEST.value(), null));
+    }
     // ── Sentinel domain errors ───────────────────────────────────────────
     @ExceptionHandler(SentinelException.class)
     public ResponseEntity<ErrorResponse> handleSentinel(SentinelException ex) {

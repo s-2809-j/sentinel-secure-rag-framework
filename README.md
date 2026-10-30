@@ -45,6 +45,7 @@ Sentinel is an AI security gateway and Retrieval-Augmented Generation (RAG) fram
 | **Semantic Attack Detection** | **Inactive** | `SimilarityDetector` connects to `sentinel_attack_index`, which currently contains 0 vectors in the seed database. |
 | **JWT Authentication & Rotation** | **Implemented** | Stateless 15-minute access tokens with rotating 7-day database-backed refresh tokens in PostgreSQL. |
 | **Role-Based Access Control** | **Partial** | Coarse `@PreAuthorize` guards (`ADMIN`, `ANALYST`, `VIEWER`) are active. The fine-grained `role_permissions` schema and cached `RbacService` exist in code but are not wired to endpoints. |
+| **Admin User Management** | **Implemented** | Admin-only endpoints to list users and promote or demote roles, with self-change and last-admin protection and an optional first-admin bootstrap. |
 | **Audit Logging** | **Partial** | Controller actions are intercepted via AOP and stored in `audit_logs`. Filter-level security rejections and uncaught exception details are not captured. |
 
 ---
@@ -112,6 +113,21 @@ npm install
 npm run dev
 ```
 Access the web user interface at `http://localhost:5173`.
+
+### Step 5: Create the First Admin
+
+Registration always creates a `VIEWER`. To get the first `ADMIN`, register a normal account, then restart the backend with its username set:
+
+```bash
+# Linux/macOS
+export BOOTSTRAP_ADMIN_USERNAME="your_username"
+# Windows PowerShell
+$env:BOOTSTRAP_ADMIN_USERNAME = "your_username"
+
+./gradlew bootRun
+```
+
+If no active `ADMIN` exists, that user is promoted at startup and a WARN is logged. Otherwise nothing happens. Unset the variable afterwards, then log out and back in so the UI picks up the new role. Further roles are managed from `/admin/users`.
 
 ---
 
@@ -211,7 +227,7 @@ Browser / React SPA (localhost:5173)
         ▼
 Spring Boot Gateway (localhost:8080)
   ├── Security Filters (JwtAuthenticationFilter)
-  ├── Controllers (ChatController, DocumentController, AuthController, AuditController)
+  ├── Controllers (ChatController, DocumentController, AuthController, AuditController, AdminUserController)
   ├── PostgreSQL Database (users, refresh_tokens, chat_sessions, chat_messages, audit_logs)
   ├── AuditAspect (AOP controller interception)
   └── OpenFeign Client (FastApiClient)
@@ -423,6 +439,7 @@ Users are assigned one of three roles: `ADMIN`, `ANALYST`, or `VIEWER`. Roles ar
 | `/api/v1/documents/analyze` | POST | `ANALYST`, `ADMIN` | `@PreAuthorize("hasAnyRole('ANALYST', 'ADMIN')")` |
 | `/api/v1/documents/upload` | POST | `ANALYST`, `ADMIN` | `@PreAuthorize("hasAnyRole('ANALYST', 'ADMIN')")` |
 | `/api/v1/audit/**` | GET | `ADMIN` only | `@PreAuthorize("hasRole('ADMIN')")` |
+| `/api/v1/admin/users/**` | GET, PATCH | `ADMIN` only | `@PreAuthorize("hasRole('ADMIN')")` (class level) |
 
 ---
 
@@ -441,7 +458,9 @@ Users are assigned one of three roles: `ADMIN`, `ANALYST`, or `VIEWER`. Roles ar
 | `POST` | `/api/v1/documents/upload` | ANALYST, ADMIN | `multipart/form-data` (`file`) OR `application/json` (`filePath`) | Analyzes and ingests approved documents into RAG knowledge base. |
 | `GET` | `/api/v1/audit/logs` | ADMIN | Query: `page`, `size` | Returns paginated list of all audit log entries. |
 | `GET` | `/api/v1/audit/logs/user/{userId}` | ADMIN | Path: `userId`, Query: `page`, `size` | Returns paginated audit logs for a specific user UUID. |
-| `GET` | `/api/v1/audit/logs/range` | ADMIN | Query: `from`, `to`, `page`, `size` | Returns paginated audit logs within an ISO-8601 timestamp range. |
+| `GET` | `/api/v1/audit/logs/range` | ADMIN | Query: `from`, `to`, `page`, `size` | Returns paginated audit logs within | `GET` | `/api/v1/audit/logs/range` | ADMIN | Query: `from`, `to`, `page`, `size` | Returns paginated audit logs within an ISO-8601 timestamp range. |
+| `GET` | `/api/v1/admin/users` | ADMIN | None | Lists users as `{ id, username, email, role, active }`. Never returns the password hash. |
+| `PATCH` | `/api/v1/admin/users/{id}/role` | ADMIN | `{ "role": "ADMIN" \| "ANALYST" \| "VIEWER" }` | Changes a user's role. Returns 200 with the updated user (same role is a no-op), 400 invalid role or id, 403 own role (`SELF_ROLE_CHANGE`), 404 unknown user, 409 last admin (`LAST_ADMIN`). |
 
 ### FastAPI AI Engine (`http://localhost:8000`)
 
@@ -487,6 +506,7 @@ Read from `application.yml` and profile overlays:
 | `CORS_ALLOWED_ORIGINS` | Permitted CORS origins (comma-separated) | No | `http://localhost:5173,http://localhost:3000` | `application.yml` |
 | `spring.jpa.hibernate.ddl-auto` | Hibernate DDL validation mode | No | `validate` | `application.yml` |
 | `spring.flyway.enabled` | Enable database migrations on startup | No | `true` | `application.yml` |
+| `BOOTSTRAP_ADMIN_USERNAME` (`sentinel.bootstrap-admin-username`) | If no active ADMIN exists, promotes this already-registered user to ADMIN at startup. No password is involved. Unset after use. | No | *(empty, disabled)* | `application.yml` |
 
 #### Spring Profiles:
 - **`dev`** (`application-dev.yml`, active by default): Sets `spring.jpa.show-sql = true`, `logging.level.com.sentinel = DEBUG`, and enables detailed SQL logging.
@@ -553,7 +573,10 @@ cd sentinel-backend
   - `ChatControllerTest`: Chat endpoint role security and request payload validation.
   - `DocumentControllerTest`: Multipart and JSON document upload endpoints (Note: contains zero tests for extension whitelisting, size limits, or path traversal validation).
   - `FastApiClientTest`: WireMock-based integration tests for OpenFeign calls to FastAPI.
-  - `UpdateRoleTest` and `SentinelBackendApplicationTests`: Role updating and Spring context loading.
+  - `AdminUserControllerIT`: Admin role endpoints on H2 with the real security chain (401, 403, promote and demote, self-change, last-admin, 404, 400).
+  - `AdminBootstrapRunnerTest`: First-admin bootstrap promotes only when no active ADMIN exists.
+  - `SentinelBackendApplicationTests`: Spring context loading.
+  - `UpdateRoleTest`: A one-off SQL `UPDATE` with no assertions (not a real test; it runs against the default profile's database).
 - **Uncovered Areas:**
   - `JwtAuthenticationFilter`: No isolated filter tests verifying request context or security context propagation.
   - `ChatSessionService`: No unit tests for session resolution or message persistence.
@@ -581,7 +604,7 @@ sentinel/
 │   │   ├── api/                        # axiosInstance.ts with 401 response interceptor
 │   │   ├── components/                 # Reusable UI widgets (AuditTable, ChatMessage, Navbar)
 │   │   ├── context/                    # AuthContext managing user state and localStorage
-│   │   ├── pages/                      # View pages (AnalyzePage, AuditPage, ChatPage, LoginPage, RegisterPage, UploadPage)
+│   │   ├── pages/                      # View pages (AdminUsersPage, AnalyzePage, AuditPage, ChatPage, LoginPage, RegisterPage, UploadPage)
 │   │   ├── routes/                     # ProtectedRoute.tsx route wrapper
 │   │   ├── types/                      # TypeScript domain interfaces and API contracts
 │   │   ├── App.tsx                     # React Router view definitions and page layout
@@ -591,6 +614,7 @@ sentinel/
 │
 ├── sentinel-backend/                   # Spring Boot API Gateway
 │   ├── src/main/java/com/sentinel/
+│   │   ├── admin/                      # Admin user management (controller, service, dto, bootstrap)
 │   │   ├── audit/                      # System audit logging (AuditAspect, AuditController, AuditService)
 │   │   ├── auth/                       # Authentication, JWT utilities, user security details
 │   │   │   ├── controller/             # AuthController (register, login, refresh, logout)
@@ -673,6 +697,8 @@ Sentinel is a development prototype. The main gaps to know before any non-local 
 
 - **Internal AI engine is unauthenticated and path-driven.** FastAPI (port 8000) has no authentication, and its document endpoints accept server-side file paths, with weak path and size guards and none on `/v1/knowledge/upload`. It must only be reachable from the Spring gateway on the same host. Planned fix: shared-secret or mTLS between the services, and multipart streams instead of file paths.
 - **Shared knowledge base and limited detection depth.** All users query one vector collection with no tenant scoping. Input detection is regex-based, so obfuscated attacks can evade it, and the semantic attack-similarity layer is built but inactive (its index has 0 vectors).
+- **Role changes and the UI.** The backend applies a new role on the user's next request, but the role cached in browser `localStorage` (and the navbar) stays stale until the next token refresh (up to 15 minutes) or re-login.
+- **Audit status for controller exceptions.** `AuditAspect` records any exception thrown from a controller as status 500, so 403 and 409 role-change errors appear as 500 in the audit log.
 - **Prototype-grade operational hardening.** There is no rate limiting. Refresh tokens are stored in plaintext and in `localStorage`. `ChatService` holds a database transaction open across the AI call. CI currently runs no tests.
 
 ---

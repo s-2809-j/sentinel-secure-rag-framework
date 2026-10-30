@@ -81,9 +81,15 @@ class DocumentControllerTest {
     private static final String ANALYZE_ENDPOINT = "/api/v1/documents/analyze";
     private static final String UPLOAD_ENDPOINT  = "/api/v1/documents/upload";
 
-    private DocumentUploadRequest sampleRequest() {
+    private DocumentUploadRequest sampleRequest() throws java.io.IOException {
+        // Must be under the real temp dir: DocumentController.validateFilePath
+        // only accepts paths below java.io.tmpdir (resolved with toRealPath()).
+        String path = java.nio.file.Path.of(System.getProperty("java.io.tmpdir"))
+                .toRealPath()
+                .resolve("report.pdf")
+                .toString();
         return new DocumentUploadRequest(
-                "/uploads/report.pdf",
+                path,
                 "report.pdf",
                 "pdf",
                 "application/pdf",
@@ -123,7 +129,7 @@ class DocumentControllerTest {
         @WithMockUser(username = "analyst@sentinel.io", roles = "ANALYST")
         @DisplayName("200 when ANALYST submits valid document")
         void analyze_returns200ForAnalyst() throws Exception {
-            given(documentService.analyzeDocument(any(DocumentUploadRequest.class)))
+            given(documentService.analyzeDocument(any(DocumentUploadRequest.class), any(String.class)))
                     .willReturn(sampleAnalysisResponse());
 
             mockMvc.perform(post(ANALYZE_ENDPOINT)
@@ -140,7 +146,7 @@ class DocumentControllerTest {
         @WithMockUser(username = "admin@sentinel.io", roles = "ADMIN")
         @DisplayName("200 when ADMIN submits valid document")
         void analyze_returns200ForAdmin() throws Exception {
-            given(documentService.analyzeDocument(any(DocumentUploadRequest.class)))
+            given(documentService.analyzeDocument(any(DocumentUploadRequest.class), any(String.class)))
                     .willReturn(sampleAnalysisResponse());
 
             mockMvc.perform(post(ANALYZE_ENDPOINT)
@@ -154,7 +160,7 @@ class DocumentControllerTest {
         @WithMockUser(username = "analyst@sentinel.io", roles = "ANALYST")
         @DisplayName("200 when ANALYST submits multipart document analysis")
         void analyze_returns200ForAnalystMultipart() throws Exception {
-            given(documentService.analyzeDocument(any(DocumentUploadRequest.class)))
+            given(documentService.analyzeDocument(any(DocumentUploadRequest.class), any(String.class)))
                     .willReturn(sampleAnalysisResponse());
 
             org.springframework.mock.web.MockMultipartFile mockFile =
@@ -214,7 +220,7 @@ class DocumentControllerTest {
         @WithMockUser(roles = "ANALYST")
         @DisplayName("502 when FastAPI engine is unavailable")
         void analyze_returns502WhenFastApiIsDown() throws Exception {
-            given(documentService.analyzeDocument(any(DocumentUploadRequest.class)))
+            given(documentService.analyzeDocument(any(DocumentUploadRequest.class), any(String.class)))
                     .willThrow(new FastApiException("FastAPI unreachable"));
 
             mockMvc.perform(post(ANALYZE_ENDPOINT)
@@ -237,7 +243,7 @@ class DocumentControllerTest {
         @WithMockUser(username = "admin@sentinel.io", roles = "ADMIN")
         @DisplayName("200 when ADMIN uploads document to knowledge base")
         void upload_returns200ForAdmin() throws Exception {
-            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class)))
+            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class), any(String.class)))
                     .willReturn(sampleKnowledgeResponse());
 
             mockMvc.perform(post(UPLOAD_ENDPOINT)
@@ -254,7 +260,7 @@ class DocumentControllerTest {
         @WithMockUser(username = "admin@sentinel.io", roles = "ADMIN")
         @DisplayName("200 when ADMIN uploads multipart document to knowledge base")
         void upload_returns200ForAdminMultipart() throws Exception {
-            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class)))
+            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class), any(String.class)))
                     .willReturn(sampleKnowledgeResponse());
 
             org.springframework.mock.web.MockMultipartFile mockFile =
@@ -276,7 +282,7 @@ class DocumentControllerTest {
         @WithMockUser(username = "analyst@sentinel.io", roles = "ANALYST")
         @DisplayName("200 when ANALYST uploads document to knowledge base")
         void upload_returns200ForAnalyst() throws Exception {
-            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class)))
+            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class), any(String.class)))
                     .willReturn(sampleKnowledgeResponse());
 
             mockMvc.perform(post(UPLOAD_ENDPOINT)
@@ -328,7 +334,7 @@ class DocumentControllerTest {
         @WithMockUser(roles = "ADMIN")
         @DisplayName("502 when FastAPI engine is unavailable during upload")
         void upload_returns502WhenFastApiIsDown() throws Exception {
-            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class)))
+            given(documentService.uploadToKnowledge(any(DocumentUploadRequest.class), any(String.class)))
                     .willThrow(new FastApiException("FastAPI unreachable during upload"));
 
             mockMvc.perform(post(UPLOAD_ENDPOINT)

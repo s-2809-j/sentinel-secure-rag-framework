@@ -4,16 +4,17 @@ import axiosInstance from '../api/axiosInstance';
 
 // Role → allowed nav items
 const NAV_ITEMS: { label: string; path: string; roles: string[] }[] = [
-  { label: 'Chat',    path: '/chat',    roles: ['VIEWER', 'ANALYST', 'ADMIN'] },
+  { label: 'Chat', path: '/chat', roles: ['VIEWER', 'ANALYST', 'ADMIN'] },
   { label: 'Analyze', path: '/analyze', roles: ['ANALYST', 'ADMIN'] },
-  { label: 'Upload',  path: '/upload',  roles: ['ANALYST', 'ADMIN'] },
-  { label: 'Audit',   path: '/audit',   roles: ['ADMIN'] },
+  { label: 'Upload', path: '/upload', roles: ['ANALYST', 'ADMIN'] },
+  { label: 'Audit', path: '/audit', roles: ['ADMIN'] },
+  { label: 'Users', path: '/admin/users', roles: ['ADMIN'] },
 ];
 
 const ROLE_COLORS: Record<string, string> = {
-  ADMIN:   'bg-sentinel-accent/10 text-sentinel-accent border-sentinel-accent/30',
+  ADMIN: 'bg-sentinel-accent/10 text-sentinel-accent border-sentinel-accent/30',
   ANALYST: 'bg-violet-500/10 text-violet-400 border-violet-500/30',
-  VIEWER:  'bg-sentinel-muted/10 text-sentinel-muted border-sentinel-muted/30',
+  VIEWER: 'bg-sentinel-muted/10 text-sentinel-muted border-sentinel-muted/30',
 };
 
 export default function Navbar() {
@@ -21,14 +22,14 @@ export default function Navbar() {
   const navigate = useNavigate();
 
   const handleLogout = async () => {
-  try {
-    await axiosInstance.post('/api/v1/auth/logout');
-  } catch {
-    // Best-effort — clear state regardless
-  }
-  logout();                          // AuthContext already clears localStorage via setUserBoth(null)
-  navigate('/login', { replace: true });
-};
+    try {
+      await axiosInstance.post('/api/v1/auth/logout');
+    } catch {
+      // Best-effort — clear state regardless
+    }
+    logout();                          // AuthContext already clears localStorage via setUserBoth(null)
+    navigate('/login', { replace: true });
+  };
 
   if (!user) return null;
 

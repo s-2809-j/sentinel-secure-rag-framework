@@ -16,6 +16,16 @@ export interface AuthUser {
   role: string;
 }
 
+// ─── Admin ────────────────────────────────────────────────────────────
+
+export interface UserSummary {
+  id: string;
+  username: string;
+  email: string;
+  role: string;
+  active: boolean;
+}
+
 // ─── Chat ────────────────────────────────────────────────────────────────────
 
 export interface ChatResponse {

@@ -45,3 +45,6 @@ management:
   endpoint:
     health:
       show-details: when-authorized
+
+sentinel:
+  bootstrap-admin-username: ${BOOTSTRAP_ADMIN_USERNAME:}

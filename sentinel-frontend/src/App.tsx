@@ -10,7 +10,7 @@ import AnalyzePage from './pages/AnalyzePage';
 import UploadPage from './pages/UploadPage';
 import AuditPage from './pages/AuditPage';
 import Navbar from './components/Navbar';
-
+import AdminUsersPage from './pages/AdminUsersPage';
 function AppRoutes() {
   const { user, userRef, updateTokens, logout } = useAuth();
   const navigate = useNavigate();
@@ -42,12 +42,16 @@ function AppRoutes() {
         {/* Protected — ANALYST, ADMIN */}
         <Route element={<ProtectedRoute allowedRoles={['ANALYST', 'ADMIN']} />}>
           <Route path="/analyze" element={<AnalyzePage />} />
-          <Route path="/upload"  element={<UploadPage />} />
+          <Route path="/upload" element={<UploadPage />} />
         </Route>
 
         {/* Protected — ADMIN only */}
         <Route element={<ProtectedRoute allowedRoles={['ADMIN']} />}>
           <Route path="/audit" element={<AuditPage />} />
+        </Route>
+        <Route element={<ProtectedRoute allowedRoles={['ADMIN']} />}>
+          <Route path="/audit" element={<AuditPage />} />
+          <Route path="/admin/users" element={<AdminUsersPage />} />
         </Route>
 
         {/* Root redirect */}

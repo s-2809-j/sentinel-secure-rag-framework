@@ -21,9 +21,6 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
-
-import java.time.Instant;
-
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willDoNothing;
@@ -83,15 +80,13 @@ class AuthControllerTest {
                     "analyst@sentinel.io",
                     "S3cur3P@ss!"
             );
-            given(authService.register(any(RegisterRequest.class))).willReturn(sampleLoginResponse());
+            willDoNothing().given(authService).register(any(RegisterRequest.class));
 
             mockMvc.perform(post(BASE + "/register")
                             .with(csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(body)))
-                    .andExpect(status().isCreated())
-                    .andExpect(jsonPath("$.accessToken").value("access-token-stub"))
-                    .andExpect(jsonPath("$.role").value("ANALYST"));
+                    .andExpect(status().isCreated());
         }
 
         @Test

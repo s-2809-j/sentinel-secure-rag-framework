@@ -1,5 +1,6 @@
 package com.sentinel.document.controller;
 
+import com.sentinel.auth.model.User;
 import com.sentinel.document.dto.DocumentAnalysisResponse;
 import com.sentinel.document.dto.DocumentUploadRequest;
 import com.sentinel.document.dto.KnowledgeUploadResponse;
@@ -13,7 +14,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -48,11 +48,11 @@ public class DocumentController {
     @PreAuthorize("hasAnyRole('ANALYST', 'ADMIN')")
     public ResponseEntity<DocumentAnalysisResponse> analyzeDocument(
             @RequestBody @Valid DocumentUploadRequest request,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            @AuthenticationPrincipal User user) {
 
         validateFilePath(request.filePath());
         return ResponseEntity.ok(
-                documentService.analyzeDocument(request, userDetails.getUsername())
+                documentService.analyzeDocument(request, user.getId().toString())
         );
     }
 
@@ -60,11 +60,11 @@ public class DocumentController {
     @PreAuthorize("hasAnyRole('ANALYST', 'ADMIN')")
     public ResponseEntity<KnowledgeUploadResponse> uploadDocument(
             @RequestBody @Valid DocumentUploadRequest request,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            @AuthenticationPrincipal User user) {
 
         validateFilePath(request.filePath());
         return ResponseEntity.ok(
-                documentService.uploadToKnowledge(request, userDetails.getUsername())
+                documentService.uploadToKnowledge(request, user.getId().toString())
         );
     }
 
@@ -74,7 +74,7 @@ public class DocumentController {
     @PreAuthorize("hasAnyRole('ANALYST', 'ADMIN')")
     public ResponseEntity<DocumentAnalysisResponse> analyzeDocumentMultipart(
             @RequestParam("file") MultipartFile file,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            @AuthenticationPrincipal User user) {
 
         DocumentUploadRequest request;
         try {
@@ -85,7 +85,7 @@ public class DocumentController {
 
         try {
             return ResponseEntity.ok(
-                    documentService.analyzeDocument(request, userDetails.getUsername())
+                    documentService.analyzeDocument(request, user.getId().toString())
             );
         } finally {
             cleanupTempFile(request.filePath());
@@ -96,7 +96,7 @@ public class DocumentController {
     @PreAuthorize("hasAnyRole('ANALYST', 'ADMIN')")
     public ResponseEntity<KnowledgeUploadResponse> uploadDocumentMultipart(
             @RequestParam("file") MultipartFile file,
-            @AuthenticationPrincipal UserDetails userDetails) {
+            @AuthenticationPrincipal User user) {
 
         DocumentUploadRequest request;
         try {
@@ -107,7 +107,7 @@ public class DocumentController {
 
         try {
             return ResponseEntity.ok(
-                    documentService.uploadToKnowledge(request, userDetails.getUsername())
+                    documentService.uploadToKnowledge(request, user.getId().toString())
             );
         } finally {
             cleanupTempFile(request.filePath());

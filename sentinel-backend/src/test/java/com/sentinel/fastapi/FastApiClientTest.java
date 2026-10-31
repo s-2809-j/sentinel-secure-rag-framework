@@ -37,9 +37,12 @@ class FastApiClientTest {
         WireMock.configureFor("localhost", wireMock.port());
     }
 
+    private static final String SERVICE_TOKEN = "test-fastapi-service-token";
+
     @DynamicPropertySource
     static void overrideFastApiBaseUrl(DynamicPropertyRegistry registry) {
         registry.add("fastapi.base-url", () -> "http://localhost:" + wireMock.port());
+        registry.add("fastapi.service-token", () -> SERVICE_TOKEN);
     }
 
     @Autowired
@@ -100,6 +103,7 @@ class FastApiClientTest {
         void chat_sendsCorrectRequestBody() {
 
             wireMock.stubFor(post(urlEqualTo(CHAT_PATH))
+                    .withHeader("X-Service-Token", equalTo(SERVICE_TOKEN))
                     .withRequestBody(matchingJsonPath("$.query", equalTo("Test query")))
                     .withRequestBody(matchingJsonPath("$.request_id", equalTo("req-abc")))
                     .withRequestBody(matchingJsonPath("$.user_id", equalTo("test-user")))

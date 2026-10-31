@@ -13,6 +13,7 @@ spring:
 
 fastapi:
   base-url: http://localhost:9999   # overridden by @DynamicPropertySource in FastApiClientTest
+  service-token: test-fastapi-service-token
 
 jwt:
   secret: dGVzdC1zZWNyZXQta2V5LXRoYXQtaXMtYXQtbGVhc3QtMjU2LWJpdHMtbG9uZy1mb3ItdGVzdGluZw==

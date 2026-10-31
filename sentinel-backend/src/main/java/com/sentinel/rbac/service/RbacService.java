@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class RbacService {
-    
+
 
     private final RolePermissionRepository rolePermissionRepository;
 

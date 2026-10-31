@@ -2,7 +2,7 @@
 POST /v1/chat
 Accepts ChatApiRequest from Spring Boot.
 Translates → ChatRequest → invokes graph → translates → ChatApiResponse.
-No auth. No persistence. No business logic.
+Service-token auth + per-user rate limit. No persistence. No business logic.
 """
 
 from __future__ import annotations
@@ -11,12 +11,14 @@ from fastapi.responses import JSONResponse
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from langgraph.graph.state import CompiledStateGraph
 
 from src.api.dependencies import get_compiled_graph
+from src.api.rate_limit import enforce_chat_rate_limit
 from src.api.schemas.requests import ChatApiRequest
 from src.api.schemas.responses import ChatApiResponse, ErrorApiResponse
+from src.api.security import require_service_token
 from src.orchestration.models import ChatRequest, WorkflowType
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,10 @@ router = APIRouter(prefix="/v1/chat", tags=["chat"])
     "",
     response_model=ChatApiResponse,
     summary="Execute a chat request through the LangGraph pipeline",
+    dependencies=[
+        Depends(require_service_token),
+        Depends(enforce_chat_rate_limit),
+    ],
 )
 async def handle_chat(
     body: ChatApiRequest,
@@ -48,17 +54,16 @@ async def handle_chat(
         workflow=WorkflowType.CHAT,
         request_id=body.request_id,
         query=body.query,
-        session_id=body.session_id,   # ← add this
-        # user_id=body.user_id,
+        session_id=body.session_id,
     )
 
     try:
         initial_state = {
             "request_id": chat_request.request_id,
             "workflow": chat_request.workflow.value,
+            "user_id": body.user_id,
             "query": chat_request.query,
-            "session_id": chat_request.session_id,   # ← add this
-            # "user_id": chat_request.user_id,  
+            "session_id": chat_request.session_id,
             "file_path": None,
             "metadata": None,
             "security_passed": None,
@@ -66,7 +71,7 @@ async def handle_chat(
             "risk_score": None,
             "blocked": None,
             "raw_response": None,
-            "retrieved_chunks": None, 
+            "retrieved_chunks": None,
             "validation_approved": None,
             "final_response": None,
             "error": None,
@@ -75,10 +80,10 @@ async def handle_chat(
         result_state: dict = graph.invoke(
             initial_state,
             config={
-            "configurable": {
-                "thread_id": chat_request.session_id or chat_request.request_id
-            }
-        }
+                "configurable": {
+                    "thread_id": chat_request.session_id or chat_request.request_id
+                }
+            },
         )
         raw_res = result_state.get("raw_response")
         final_res = result_state.get("final_response")
@@ -86,8 +91,10 @@ async def handle_chat(
         final_len = len(final_res) if isinstance(final_res, (str, list, dict)) else None
 
         logger.info(
-            "graph result_state — request_id=%s raw_len=%s final_len=%s validation_approved=%r error=%r",
+            "graph result_state — request_id=%s user_id=%s raw_len=%s final_len=%s "
+            "validation_approved=%r error=%r",
             chat_request.request_id,
+            body.user_id,
             raw_len,
             final_len,
             result_state.get("validation_approved"),
@@ -97,7 +104,7 @@ async def handle_chat(
     except Exception:
         logger.exception(
             "graph invocation failed for chat",
-            extra={"request_id": body.request_id},
+            extra={"request_id": body.request_id, "user_id": body.user_id},
         )
 
         return JSONResponse(
@@ -111,7 +118,9 @@ async def handle_chat(
             ).model_dump(),
         )
 
-    blocked: bool = bool(result_state.get("blocked")) or (result_state.get("validation_approved") is False)
+    blocked: bool = bool(result_state.get("blocked")) or (
+        result_state.get("validation_approved") is False
+    )
     final_response = result_state.get("final_response")
     error_msg: str | None = result_state.get("error")
 
@@ -129,7 +138,11 @@ async def handle_chat(
         )
         logger.warning(
             "chat request blocked",
-            extra={"request_id": body.request_id, "risk_score": risk_score},
+            extra={
+                "request_id": body.request_id,
+                "user_id": body.user_id,
+                "risk_score": risk_score,
+            },
         )
         return ChatApiResponse(
             request_id=body.request_id,
@@ -144,7 +157,11 @@ async def handle_chat(
     if error_msg:
         logger.error(
             "graph returned error state",
-            extra={"request_id": body.request_id, "error": error_msg},
+            extra={
+                "request_id": body.request_id,
+                "user_id": body.user_id,
+                "error": error_msg,
+            },
         )
         return ChatApiResponse(
             request_id=body.request_id,
@@ -164,7 +181,10 @@ async def handle_chat(
         else None
     )
 
-    logger.info("chat request succeeded", extra={"request_id": body.request_id})
+    logger.info(
+        "chat request succeeded",
+        extra={"request_id": body.request_id, "user_id": body.user_id},
+    )
     return ChatApiResponse(
         request_id=body.request_id,
         success=True,

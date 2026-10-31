@@ -205,12 +205,24 @@ def make_chat_generation_node(
 
     def chat_generation_node(state: SentinelState) -> SentinelState:
         normalized_query = state.get("normalized_query") or ""
+        user_id = state.get("user_id")
 
         logger.info(
             "chat_generation_node: invoking AssistantAgent.generate_response(). "
-            "request_id=%s",
+            "request_id=%s user_id=%s",
             state.get("request_id"),
+            user_id,
         )
+
+        # Tenant scope: user's uploads + shared domain packs (domain != uploaded).
+        metadata_filter = None
+        if user_id:
+            metadata_filter = {
+                "$or": [
+                    {"user_id": user_id},
+                    {"domain": {"$ne": "uploaded"}},
+                ]
+            }
 
         # FIX 5C — Wrap LLM/agent call in try/except. On any exception:
         # log with logger.error, set final_response to safe string,
@@ -218,6 +230,7 @@ def make_chat_generation_node(
         try:
             raw_response, retrieved_chunks = agent.generate_response(
                 query=normalized_query,
+                metadata_filter=metadata_filter,
             )
 
         except Exception as exc:
@@ -456,17 +469,20 @@ def make_knowledge_upload_node(
     def knowledge_upload_node(state: SentinelState) -> SentinelState:
         file_path = state.get("file_path")
         metadata = state.get("metadata")
+        user_id = state.get("user_id")
 
         logger.info(
             "knowledge_upload_node: invoking AssistantAgent.upload_document(). "
-            "request_id=%s",
+            "request_id=%s user_id=%s",
             state.get("request_id"),
+            user_id,
         )
 
         try:
             result = agent.upload_document(
                 file_path=file_path,
                 metadata=metadata,
+                user_id=user_id,
             )
 
         except Exception:

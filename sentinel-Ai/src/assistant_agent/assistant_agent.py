@@ -292,6 +292,7 @@ class AssistantAgent:
     file_path: Path,
     metadata: FileMetadata,
     security_decision=None,
+    user_id: str | None = None,
     ) -> object:
         """
         Securely upload a document into the Knowledge Base.
@@ -313,8 +314,9 @@ class AssistantAgent:
             )
 
         logger.info(
-            "Starting secure upload for '%s'.",
+            "Starting secure upload for '%s' user_id=%s.",
             file_path,
+            user_id,
         )
 
         try:
@@ -354,6 +356,7 @@ class AssistantAgent:
                 file_path=file_path,
                 metadata=metadata,
                 parsed_document=security_decision.parsed_document,
+                user_id=user_id,
             )
 
             ingestion_result = (

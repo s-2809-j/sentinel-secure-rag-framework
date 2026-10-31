@@ -30,6 +30,7 @@ class IngestionRequest:
     file_path: Path
     metadata: FileMetadata
     parsed_document: ParsedDocument
+    user_id: str | None = None
 
 
 @dataclass(slots=True)

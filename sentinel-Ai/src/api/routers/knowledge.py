@@ -2,7 +2,7 @@
 POST /v1/knowledge/upload
 Accepts KnowledgeApiRequest from Spring Boot.
 Translates → KnowledgeUploadRequest → invokes graph → KnowledgeApiResponse.
-No auth. No persistence. No business logic.
+Service-token auth + per-user rate limit. No persistence. No business logic.
 """
 
 from __future__ import annotations
@@ -17,8 +17,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from langgraph.graph.state import CompiledStateGraph
 
 from src.api.dependencies import get_compiled_graph
+from src.api.rate_limit import enforce_knowledge_rate_limit
 from src.api.schemas.requests import KnowledgeApiRequest
 from src.api.schemas.responses import ErrorApiResponse, KnowledgeApiResponse
+from src.api.security import require_service_token
 from src.common.models import FileMetadata
 from src.orchestration.models import KnowledgeUploadRequest, WorkflowType
 
@@ -49,6 +51,10 @@ def _to_jsonable(value: Any) -> Any:
     "/upload",
     response_model=KnowledgeApiResponse,
     summary="Ingest a document into the knowledge base",
+    dependencies=[
+        Depends(require_service_token),
+        Depends(enforce_knowledge_rate_limit),
+    ],
 )
 async def handle_knowledge_upload(
     body: KnowledgeApiRequest,
@@ -61,7 +67,11 @@ async def handle_knowledge_upload(
     # Fix: "filename" is a reserved LogRecord attribute — use "document_filename".
     logger.info(
         "knowledge upload request received",
-        extra={"request_id": body.request_id, "document_filename": body.filename},
+        extra={
+            "request_id": body.request_id,
+            "user_id": body.user_id,
+            "document_filename": body.filename,
+        },
     )
 
     metadata = FileMetadata(
@@ -83,6 +93,8 @@ async def handle_knowledge_upload(
         initial_state = {
             "request_id": upload_request.request_id,
             "workflow": upload_request.workflow.value,
+            "user_id": body.user_id,
+            "session_id": None,
             "query": None,
             "file_path": upload_request.file_path,
             "metadata": upload_request.metadata,
@@ -103,7 +115,7 @@ async def handle_knowledge_upload(
     except Exception as exc:
         logger.exception(
             "graph invocation failed for knowledge upload",
-            extra={"request_id": body.request_id},
+            extra={"request_id": body.request_id, "user_id": body.user_id},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -132,7 +144,7 @@ async def handle_knowledge_upload(
 
     logger.info(
         "knowledge upload succeeded",
-        extra={"request_id": body.request_id},
+        extra={"request_id": body.request_id, "user_id": body.user_id},
     )
     return KnowledgeApiResponse(
         request_id=body.request_id,

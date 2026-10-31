@@ -86,12 +86,15 @@ class KnowledgeIngestionPipeline:
                         "be ingested."
                     )
 
-            # FIX 4B — Duplicate document prevention via checksum.
+            # FIX 4B — Duplicate document prevention via checksum (scoped by user).
             checksum = parsed.metadata.checksum
-            if checksum and self._vector_store.exists_by_checksum(checksum):
+            if checksum and self._vector_store.exists_by_checksum(
+                checksum, user_id=request.user_id
+            ):
                 logger.info(
-                    "Document with checksum %s already ingested — skipping.",
+                    "Document with checksum %s already ingested for user_id=%s — skipping.",
                     checksum,
+                    request.user_id,
                 )
                 return IngestionResult(
                     status=IngestionStatus.SUCCESS,
@@ -101,22 +104,26 @@ class KnowledgeIngestionPipeline:
                     message="Document already ingested.",
                 )
 
+            chunk_metadata = {
+                "domain": "uploaded",
+                "document_name": parsed.metadata.filename,
+                "source": parsed.metadata.filename,
+                "section": "root",
+                "malicious": False,
+                "filename": parsed.metadata.filename,
+                "extension": parsed.metadata.extension,
+                "mime_type": parsed.metadata.mime_type,
+                "size_bytes": parsed.metadata.size_bytes,
+                "checksum": parsed.metadata.checksum,
+                "parser": parsed.parser_name,
+                "page_count": parsed.page_count,
+            }
+            if request.user_id:
+                chunk_metadata["user_id"] = request.user_id
+
             document = Document(
                 content=parsed.text,
-                metadata={
-                    "domain": "uploaded",
-                    "document_name": parsed.metadata.filename,
-                    "source": parsed.metadata.filename,
-                    "section": "root",
-                    "malicious": False,
-                    "filename": parsed.metadata.filename,
-                    "extension": parsed.metadata.extension,
-                    "mime_type": parsed.metadata.mime_type,
-                    "size_bytes": parsed.metadata.size_bytes,
-                    "checksum": parsed.metadata.checksum,
-                    "parser": parsed.parser_name,
-                    "page_count": parsed.page_count,
-                },
+                metadata=chunk_metadata,
             )
 
             #

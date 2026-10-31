@@ -164,21 +164,33 @@ class VectorStore:
     def count(self) -> int:
         return self._collection.count()
 
-    def exists_by_checksum(self, checksum: str) -> bool:
+    def exists_by_checksum(
+        self, checksum: str, user_id: str | None = None
+    ) -> bool:
         """
         FIX 4B — Duplicate document prevention.
 
         Query the collection for any document whose metadata checksum
-        matches the provided value. Returns True if the document has
-        already been ingested, False otherwise.
+        matches the provided value (optionally scoped to user_id).
+        Returns True if the document has already been ingested.
         """
         try:
-            result = self._collection.get(where={"checksum": checksum})
+            if user_id:
+                where: dict = {
+                    "$and": [
+                        {"checksum": checksum},
+                        {"user_id": user_id},
+                    ]
+                }
+            else:
+                where = {"checksum": checksum}
+            result = self._collection.get(where=where)
             return bool(result.get("ids"))
         except Exception as exc:
             logger.error(
-                "exists_by_checksum query failed for checksum=%s. %s: %s",
+                "exists_by_checksum query failed for checksum=%s user_id=%s. %s: %s",
                 checksum,
+                user_id,
                 type(exc).__name__,
                 exc,
             )

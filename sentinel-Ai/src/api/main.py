@@ -3,7 +3,9 @@ FastAPI AI Engine — Layer 3 internal service.
 
 This service is NEVER exposed to users directly.
 It accepts internal HTTP requests from Spring Boot only.
-No auth. No RBAC. No persistence. No session management.
+Service auth: shared secret (X-Service-Token); optional mTLS at the proxy.
+Per-user rate limits and user_id audit/tenant scoping on /v1/*.
+No user JWT/RBAC, persistence, or session management here.
 
 Startup sequence:
 1. Lifespan context runs _build_compiled_graph() once.
@@ -78,6 +80,7 @@ app = FastAPI(
     title="Sentinel AI Engine",
     description=(
         "Internal AI service. Accepts requests from Spring Boot only. "
+        "Requires X-Service-Token on /v1/*. "
         "Never expose this service directly to users or the public internet."
     ),
     version="1.0.0",

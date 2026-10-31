@@ -63,6 +63,18 @@ class SentinelState(TypedDict):
     'knowledge_upload'. Matches WorkflowType StrEnum values directly.
     """
 
+    user_id: Optional[str]
+    """
+    Authenticated user UUID asserted by Spring Boot.
+    Used for audit logging and knowledge-base tenant scoping.
+    """
+
+    session_id: Optional[str]
+    """
+    Conversation thread id for chat workflows (LangGraph checkpointer).
+    None for document workflows.
+    """
+
     # ------------------------------------------------------------------
     # Chat workflow input
     # ------------------------------------------------------------------

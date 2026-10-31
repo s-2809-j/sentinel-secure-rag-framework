@@ -47,6 +47,9 @@ Sentinel is an AI security gateway and Retrieval-Augmented Generation (RAG) fram
 | **Role-Based Access Control** | **Partial** | Coarse `@PreAuthorize` guards (`ADMIN`, `ANALYST`, `VIEWER`) are active. The fine-grained `role_permissions` schema and cached `RbacService` exist in code but are not wired to endpoints. |
 | **Admin User Management** | **Implemented** | Admin-only endpoints to list users and promote or demote roles, with self-change and last-admin protection and an optional first-admin bootstrap. |
 | **Audit Logging** | **Partial** | Controller actions are intercepted via AOP and stored in `audit_logs`. Filter-level security rejections and uncaught exception details are not captured. |
+| **Service-to-Service Authentication** | **Implemented** | Every `/v1/*` call to the AI engine must carry a shared-secret `X-Service-Token` header. Spring Boot's Feign client sends it automatically. `/internal/health` stays open for probes. |
+| **Per-User Rate Limiting** | **Implemented** | In-process sliding window keyed by `user_id` (default 30 chat and 10 document requests per minute). Returns HTTP `429` when exceeded. |
+| **Tenant-Scoped Retrieval** | **Implemented** | `user_id` flows through LangGraph state. Uploaded chunks are tagged with the uploader's `user_id`, and chat retrieval returns only that user's uploads plus shared domain packs. |
 
 ---
 
@@ -89,7 +92,8 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env and provide your GOOGLE_API_KEY
+# Edit .env and provide your GOOGLE_API_KEY and SENTINEL_INTERNAL_SERVICE_TOKEN
+# Generate a token: python -c "import secrets; print(secrets.token_urlsafe(32))"
 uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -101,6 +105,8 @@ cd sentinel-backend
 export JWT_SECRET="your-256-bit-secret-key-that-is-at-least-32-characters-long"
 export DB_USERNAME="postgres"
 export DB_PASSWORD="DB_PASSWORD"
+# Must match SENTINEL_INTERNAL_SERVICE_TOKEN in sentinel-Ai/.env
+export FASTAPI_SERVICE_TOKEN="same-secret-as-the-ai-engine"
 
 ./gradlew bootRun
 ```
@@ -232,7 +238,7 @@ Spring Boot Gateway (localhost:8080)
   ├── AuditAspect (AOP controller interception)
   └── OpenFeign Client (FastApiClient)
         │
-        │ Internal HTTP (FastApiChatRequest)
+        │ Internal HTTP + X-Service-Token header (FastApiChatRequest)
         ▼
 FastAPI AI Engine (localhost:8000)
   ├── LangGraph Compiled State Graph
@@ -272,7 +278,7 @@ sequenceDiagram
     Controller->>Service: processChat(ChatRequest)
     Service->>DB: Resolve ChatSession and Save User Message
     Service->>Feign: chat(FastApiChatRequest)
-    Feign->>FastAPI: POST /v1/chat
+        Feign->>FastAPI: POST /v1/chat (X-Service-Token, user_id)
     FastAPI->>Graph: invoke(initial_state)
     Graph->>Graph: security_node (InputSecurityAgent)
     alt Security Rejected or Detector Match
@@ -393,13 +399,14 @@ Runs across candidate LLM responses before delivery to the user:
 5. **Deduplication:** Checks metadata checksum against ChromaDB using `exists_by_checksum`.
 6. **Chunking:** `RecursiveCharacterTextSplitter` configured with `chunk_size = 1000` and `chunk_overlap = 200`.
 7. **Embedding:** `sentence-transformers/all-MiniLM-L6-v2` generates 384-dimensional dense vectors (L2-normalized).
-8. **Storage:** Stored in ChromaDB `sentinel_knowledge_base` using `upsert`.
+8. **Storage:** Stored in ChromaDB `sentinel_knowledge_base` using `upsert`. Each uploaded chunk is tagged with the uploader's `user_id`.
 
 ### Retrieval & Prompt Assembly
 
 - **Vector Distance Metric:** Configured with `metadata={"hnsw:space": "cosine"}`. Small negative values due to floating-point precision are clamped to `0.0`. Collections created under legacy squared L2 metrics are automatically detected and migrated to cosine space on initialization.
 - **Retriever Parameters:** `DEFAULT_TOP_K = 5`, `DEFAULT_THRESHOLD = 0.8` (configurable).
-- **Score Filtering:** Results are filtered using cosine `distance <= threshold`. Under ChromaDB's cosine distance ($1 - \cos(	heta)$), the default threshold of `0.8` admits chunks with cosine similarity $\ge 0.2$. Deduplication is performed by `chunk_id`.
+- **Tenant Scoping:** Chat retrieval passes a metadata filter built from the request's `user_id`, so a query sees only that user's uploads and the shared domain packs.
+- **Score Filtering:** Results are filtered using cosine `distance <= threshold`. Under ChromaDB's cosine distance ($1 - \cos(\theta)$), the default threshold of `0.8` admits chunks with cosine similarity $\ge 0.2$. Deduplication is performed by `chunk_id`.
 - **Empty-Context Guard:** If zero chunks survive threshold filtering or all candidate chunks have whitespace-only content, `AssistantAgent` returns a standardized controlled response (`"The requested information is not available in the knowledge base."`, `[]`) immediately, bypassing LLM invocation to prevent ungrounded generation.
 - **Prompt Construction:** When chunks survive, retrieved texts are truncated to a maximum of 400 characters each (dropping ~60% of each 1000-character chunk) and injected into the prompt structure:
 
@@ -441,6 +448,14 @@ Users are assigned one of three roles: `ADMIN`, `ANALYST`, or `VIEWER`. Roles ar
 | `/api/v1/audit/**` | GET | `ADMIN` only | `@PreAuthorize("hasRole('ADMIN')")` |
 | `/api/v1/admin/users/**` | GET, PATCH | `ADMIN` only | `@PreAuthorize("hasRole('ADMIN')")` (class level) |
 
+### Service-to-Service Authentication
+
+- **Shared secret:** The AI engine rejects any `/v1/*` request without a valid `X-Service-Token` header. The secret is `SENTINEL_INTERNAL_SERVICE_TOKEN` in `sentinel-Ai/.env`. The gateway's Feign client sends the same value from `FASTAPI_SERVICE_TOKEN` on every call.
+- **Open endpoints:** `/internal/health` does not require the token, so probes keep working.
+- **What it proves:** The token authenticates the calling service, not the end user. The engine trusts the `user_id` that the gateway supplies (the user's UUID, for both chat and documents).
+- **Per-user rate limits:** A sliding window keyed by `user_id` allows 30 chat and 10 document requests per minute by default and returns HTTP `429` when exceeded.
+- **Not covered:** mTLS is a deployment or reverse-proxy concern and is not implemented in the application.
+
 ---
 
 ## API Reference
@@ -458,13 +473,13 @@ Users are assigned one of three roles: `ADMIN`, `ANALYST`, or `VIEWER`. Roles ar
 | `POST` | `/api/v1/documents/upload` | ANALYST, ADMIN | `multipart/form-data` (`file`) OR `application/json` (`filePath`) | Analyzes and ingests approved documents into RAG knowledge base. |
 | `GET` | `/api/v1/audit/logs` | ADMIN | Query: `page`, `size` | Returns paginated list of all audit log entries. |
 | `GET` | `/api/v1/audit/logs/user/{userId}` | ADMIN | Path: `userId`, Query: `page`, `size` | Returns paginated audit logs for a specific user UUID. |
-| `GET` | `/api/v1/audit/logs/range` | ADMIN | Query: `from`, `to`, `page`, `size` | Returns paginated audit logs within | `GET` | `/api/v1/audit/logs/range` | ADMIN | Query: `from`, `to`, `page`, `size` | Returns paginated audit logs within an ISO-8601 timestamp range. |
+| `GET` | `/api/v1/audit/logs/range` | ADMIN | Query: `from`, `to`, `page`, `size` | Returns paginated audit logs within an ISO-8601 timestamp range. |
 | `GET` | `/api/v1/admin/users` | ADMIN | None | Lists users as `{ id, username, email, role, active }`. Never returns the password hash. |
 | `PATCH` | `/api/v1/admin/users/{id}/role` | ADMIN | `{ "role": "ADMIN" \| "ANALYST" \| "VIEWER" }` | Changes a user's role. Returns 200 with the updated user (same role is a no-op), 400 invalid role or id, 403 own role (`SELF_ROLE_CHANGE`), 404 unknown user, 409 last admin (`LAST_ADMIN`). |
 
 ### FastAPI AI Engine (`http://localhost:8000`)
 
-*FastAPI has no built-in authentication. It should only be accessed via the Spring Boot gateway.*
+*All `/v1/*` endpoints require the `X-Service-Token` header (shared secret between Spring Boot and FastAPI) and a `user_id` in the request body. Requests over the per-user rate limit receive HTTP `429`. `/internal/health` is open. The engine should still be reachable only from the Spring Boot gateway.*
 
 | Method | Endpoint | Request Body | Description |
 |---|---|---|---|
@@ -486,6 +501,9 @@ Users are assigned one of three roles: `ADMIN`, `ANALYST`, or `VIEWER`. Roles ar
 | `LLM_PROVIDER` | LLM backend provider identifier | No | `gemini` |
 | `LLM_MODEL` | Gemini model variant | No | `gemini-2.5-flash` |
 | `LLM_TEMPERATURE` | Sampling temperature for LLM generation | No | `0` |
+| `SENTINEL_INTERNAL_SERVICE_TOKEN` | Shared secret expected in the `X-Service-Token` header on `/v1/*` | **Yes** | *None* |
+| `REAL_CHAT_LIMIT_NAME` | Chat requests per user per minute | No | `30` |
+| `REAL_DOC_LIMIT_NAME` | Document requests per user per minute | No | `10` |
 
 ### 2. Spring Boot Gateway Configuration (`sentinel-backend`)
 
@@ -503,6 +521,7 @@ Read from `application.yml` and profile overlays:
 | `JWT_ACCESS_EXPIRY_MS` | Access token lifespan in milliseconds | No | `900000` (15 mins) | `application.yml` |
 | `JWT_REFRESH_EXPIRY_MS` | Refresh token lifespan in milliseconds | No | `604800000` (7 days) | `application.yml` |
 | `FASTAPI_BASE_URL` | Base URL for FastAPI Feign client | No | `http://localhost:8000` | `application.yml` |
+| `FASTAPI_SERVICE_TOKEN` | Shared secret sent as `X-Service-Token` on every call to the AI engine. Must equal `SENTINEL_INTERNAL_SERVICE_TOKEN`. | **Yes** | *None* | `application.yml` |
 | `CORS_ALLOWED_ORIGINS` | Permitted CORS origins (comma-separated) | No | `http://localhost:5173,http://localhost:3000` | `application.yml` |
 | `spring.jpa.hibernate.ddl-auto` | Hibernate DDL validation mode | No | `validate` | `application.yml` |
 | `spring.flyway.enabled` | Enable database migrations on startup | No | `true` | `application.yml` |
@@ -548,9 +567,8 @@ python -m pytest tests/output_validation_agent --timeout=60
 ```
 
 - **Recorded Results:**
-  - `tests/api` + `tests/orchestration`: `76 passed, 9 failed, 1 deselected`
-  - `tests/output_validation_agent`: `98 passed, 4 failed, 11 skipped`
-  - **Total:** `174 passed, 13 failed, 11 skipped`
+  - `tests/api/test_routers.py`: `29 passed`
+  - Re-run `tests/orchestration` and `tests/output_validation_agent` and record their current results here.
 - **Output-guard regression tests:** `tests/api/test_output_guard.py` (offline, mocked graph) and `TestValidationNode` in `tests/orchestration/test_langgraph_graph.py`.
 - **Known Failures (13, none in the output guard):**
   - 2 documents-router tests: the fixture path `/tmp/report.pdf` is rejected by the path-traversal check when run on Windows.
@@ -643,6 +661,8 @@ sentinel/
 │   │   │   ├── routers/                # chat.py, documents.py, knowledge.py
 │   │   │   ├── schemas/                # Pydantic request and response schemas
 │   │   │   ├── dependencies.py         # Graph dependency injection
+│   │   │   ├── security.py             # X-Service-Token shared-secret check
+│   │   │   ├── rate_limit.py           # Per-user sliding-window rate limiter
 │   │   │   └── main.py                 # FastAPI application, lifespan, health endpoint
 │   │   ├── assistant_agent/            # RAG prompt generation and AssistantAgent
 │   │   ├── common/                     # Shared dataclasses and FileMetadata models
@@ -689,17 +709,17 @@ sentinel/
 - **Strict Grounding Prompt Architecture:** Restricts the LLM to answering exclusively from retrieved context chunks while commanding it to reject speculation, minimizing hallucinations for factual queries.
 - **Stateless Access Tokens with Database-Backed Refresh Rotation:** Keeps API validation stateless and fast across frequent requests while retaining the ability to invalidate refresh tokens and terminate sessions in PostgreSQL.
 - **Fail-Closed Input Security:** If any pre-generation detector fails or encounters an unhandled exception, Sentinel blocks the query with maximum risk (`1.0`) rather than allowing potentially adversarial queries through.
-
+- **Shared Secret Plus Per-User Controls Between Gateway and Engine:** The engine is internal, so a shared `X-Service-Token` authenticates the gateway, while the `user_id` the gateway supplies drives audit, tenant-scoped retrieval, and per-user rate limits. This is an application-layer control. mTLS and network isolation remain deployment concerns.
 ---
 ## Known Limitations
 
 Sentinel is a development prototype. The main gaps to know before any non-local deployment:
 
-- **Internal AI engine is unauthenticated and path-driven.** FastAPI (port 8000) has no authentication, and its document endpoints accept server-side file paths, with weak path and size guards and none on `/v1/knowledge/upload`. It must only be reachable from the Spring gateway on the same host. Planned fix: shared-secret or mTLS between the services, and multipart streams instead of file paths.
-- **Shared knowledge base and limited detection depth.** All users query one vector collection with no tenant scoping. Input detection is regex-based, so obfuscated attacks can evade it, and the semantic attack-similarity layer is built but inactive (its index has 0 vectors).
+- **Internal AI engine trusts the gateway and is path-driven.** FastAPI (port 8000) now requires a shared-secret `X-Service-Token` on `/v1/*`, but the secret is static (no rotation), mTLS is not implemented, and the engine trusts the `user_id` the gateway supplies. Document endpoints still accept server-side file paths, with weak path and size guards and none on `/v1/knowledge/upload`. It must only be reachable from the Spring gateway on the same host. Planned fix: mTLS, token rotation, and multipart streams instead of file paths.
+- **Partial tenant scoping and limited detection depth.** Chat retrieval is filtered to the requesting user's uploads plus shared domain packs, but chunk IDs are still built from domain and file name, so check for same-name collisions between users before relying on isolation. Input detection is regex-based, so obfuscated attacks can evade it, and the semantic attack-similarity layer is built but inactive (its index has 0 vectors).
 - **Role changes and the UI.** The backend applies a new role on the user's next request, but the role cached in browser `localStorage` (and the navbar) stays stale until the next token refresh (up to 15 minutes) or re-login.
 - **Audit status for controller exceptions.** `AuditAspect` records any exception thrown from a controller as status 500, so 403 and 409 role-change errors appear as 500 in the audit log.
-- **Prototype-grade operational hardening.** There is no rate limiting. Refresh tokens are stored in plaintext and in `localStorage`. `ChatService` holds a database transaction open across the AI call. CI currently runs no tests.
+- **Prototype-grade operational hardening.** Rate limiting is an in-process sliding window, so it is not shared across workers and resets on restart. Refresh tokens are stored in plaintext and in `localStorage`. `ChatService` holds a database transaction open across the AI call. CI currently runs no tests.
 
 ---
 
